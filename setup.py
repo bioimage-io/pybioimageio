@@ -30,8 +30,9 @@ _ = setup(
     ],
     packages=find_namespace_packages(exclude=["tests"]),
     install_requires=[
-        "bioimageio.spec ==0.5.3.5",
+        "bioimageio.spec ==0.5.3.6",
         "h5py",
+        "imagecodecs",
         "imageio>=2.10",
         "loguru",
         "numpy",
@@ -45,28 +46,27 @@ _ = setup(
     ],
     include_package_data=True,
     extras_require={
-        "pytorch": ["torch>=1.6", "torchvision", "keras>=3.0"],
-        "tensorflow": ["tensorflow", "keras>=2.15"],
+        "pytorch": (pytorch_deps := ["torch>=1.6,<3", "torchvision", "keras>=3.0,<4"]),
+        "tensorflow": ["tensorflow", "keras>=2.15,<4"],
         "onnx": ["onnxruntime"],
-        "dev": [
+        "dev": pytorch_deps
+        + [
             "black",
             # "crick",  # currently requires python<=3.9
             "filelock",
             "jupyter",
             "jupyter-black",
             "matplotlib",
-            "keras>=3.0",
+            "onnx",
             "onnxruntime",
             "packaging>=17.0",
             "pre-commit",
             "pdoc",
             "psutil",  # parallel pytest with 'pytest -n auto'
-            "pyright",
+            "pyright==1.1.391",
             "pytest-cov",
             "pytest-xdist",  # parallel pytest
             "pytest",
-            "torch>=1.6",
-            "torchvision",
         ],
     },
     project_urls={
