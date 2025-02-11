@@ -364,6 +364,12 @@ may be controlled with the `LOGURU_LEVEL` environment variable.
 
 ## Changelog
 
+### 0.7.1 (to be released)
+
+- New feature: `bioimageio.core.test_description` accepts **runtime_env** and **run_command** to test a resource
+  using the conda environment described by that resource (or another specified conda env)
+- breaking: removed `decimals` argument from bioimageio CLI and `bioimageio.core.commands.test()`
+
 ### 0.7.0
 
 - breaking:

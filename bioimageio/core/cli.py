@@ -11,6 +11,7 @@ import sys
 from argparse import RawTextHelpFormatter
 from difflib import SequenceMatcher
 from functools import cached_property
+from io import StringIO
 from pathlib import Path
 from pprint import pformat, pprint
 from typing import (
@@ -18,6 +19,7 @@ from typing import (
     Dict,
     Iterable,
     List,
+    Literal,
     Mapping,
     Optional,
     Sequence,
@@ -27,6 +29,7 @@ from typing import (
     Union,
 )
 
+import rich.markdown
 from loguru import logger
 from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import (
@@ -43,8 +46,12 @@ from ruyaml import YAML
 from tqdm import tqdm
 from typing_extensions import assert_never
 
+from bioimageio.core.weight_converters._add_weights import (
+    increase_available_weight_formats,
+)
 from bioimageio.spec import AnyModelDescr, InvalidDescr, load_description
 from bioimageio.spec._internal.io_basics import ZipPath
+from bioimageio.spec._internal.io_utils import write_yaml
 from bioimageio.spec._internal.types import NotEmpty
 from bioimageio.spec.dataset import DatasetDescr
 from bioimageio.spec.model import ModelDescr, v0_4, v0_5
@@ -56,6 +63,7 @@ from .commands import (
     WeightFormatArgAny,
     package,
     test,
+    update_format,
     validate_format,
 )
 from .common import MemberId, SampleId
@@ -100,27 +108,27 @@ class WithSource(ArgMixin):
         """
         if isinstance(self.descr, InvalidDescr):
             return str(getattr(self.descr, "id", getattr(self.descr, "name")))
-        else:
-            return str(
-                (
-                    (bio_config := self.descr.config.get("bioimageio", {}))
-                    and isinstance(bio_config, dict)
-                    and bio_config.get("nickname")
-                )
-                or self.descr.id
-                or self.descr.name
-            )
+
+        nickname = None
+        if (
+            isinstance(self.descr.config, v0_5.Config)
+            and (bio_config := self.descr.config.bioimageio)
+            and bio_config.model_extra is not None
+        ):
+            nickname = bio_config.model_extra.get("nickname")
+
+        return str(nickname or self.descr.id or self.descr.name)
 
 
 class ValidateFormatCmd(CmdBase, WithSource):
-    """validate the meta data format of a bioimageio resource."""
+    """Validate the meta data format of a bioimageio resource."""
 
     def run(self):
         sys.exit(validate_format(self.descr))
 
 
 class TestCmd(CmdBase, WithSource):
-    """Test a bioimageio resource (beyond meta data formatting)"""
+    """Test a bioimageio resource (beyond meta data formatting)."""
 
     weight_format: WeightFormatArgAll = "all"
     """The weight format to limit testing to.
@@ -130,8 +138,23 @@ class TestCmd(CmdBase, WithSource):
     devices: Optional[Union[str, Sequence[str]]] = None
     """Device(s) to use for testing"""
 
-    decimal: int = 4
-    """Precision for numerical comparisons"""
+    runtime_env: Union[Literal["currently-active", "as-described"], Path] = Field(
+        "currently-active", alias="runtime-env"
+    )
+    """The python environment to run the tests in
+
+        - `"currently-active"`: use active Python interpreter
+        - `"as-described"`: generate a conda environment YAML file based on the model
+            weights description.
+        - A path to a conda environment YAML.
+          Note: The `bioimageio.core` dependency will be added automatically if not present.
+    """
+
+    summary_path: Optional[Path] = Field(None, alias="summary-path")
+    """Path to save validation summary as JSON file."""
+
+    determinism: Literal["seed_only", "full"] = "seed_only"
+    """Modes to improve reproducibility of test outputs."""
 
     def run(self):
         sys.exit(
@@ -139,13 +162,15 @@ class TestCmd(CmdBase, WithSource):
                 self.descr,
                 weight_format=self.weight_format,
                 devices=self.devices,
-                decimal=self.decimal,
+                summary_path=self.summary_path,
+                runtime_env=self.runtime_env,
+                determinism=self.determinism,
             )
         )
 
 
 class PackageCmd(CmdBase, WithSource):
-    """save a resource's metadata with its associated files."""
+    """Save a resource's metadata with its associated files."""
 
     path: CliPositionalArg[Path]
     """The path to write the (zipped) package to.
@@ -201,6 +226,26 @@ def _get_stat(
     save_dataset_stat(stat, stats_path)
 
     return stat
+
+
+class UpdateFormatCmd(CmdBase, WithSource):
+    """Update the metadata format"""
+
+    output: Optional[Path] = None
+    """Save updated bioimageio.yaml to this file.
+
+    (Always renders updated bioimageio.yaml to terminal.)
+    """
+
+    def run(self):
+        updated = update_format(self.descr, output_path=self.output)
+        updated_stream = StringIO()
+        write_yaml(updated, updated_stream)
+        updated_md = f"```yaml\n{updated_stream.getvalue()}\n```"
+
+        rich_markdown = rich.markdown.Markdown(updated_md)
+        console = rich.console.Console()
+        console.print(rich_markdown)
 
 
 class PredictCmd(CmdBase, WithSource):
@@ -545,16 +590,30 @@ class PredictCmd(CmdBase, WithSource):
             save_sample(sp_out, sample_out)
 
 
+class IncreaseWeightFormatsCmd(CmdBase, WithSource):
+    output: CliPositionalArg[Path]
+    """The path to write the updated model description to."""
+
+    def run(self):
+        model_descr = ensure_description_is_model(self.descr)
+        if isinstance(model_descr, v0_4.ModelDescr):
+            raise TypeError(
+                f"model format {model_descr.format_version} not supported."
+                + " Please update the model first."
+            )
+        _ = increase_available_weight_formats(model_descr, output_path=self.output)
+
+
 JSON_FILE = "bioimageio-cli.json"
 YAML_FILE = "bioimageio-cli.yaml"
 
 
 class Bioimageio(
     BaseSettings,
+    cli_implicit_flags=True,
     cli_parse_args=True,
     cli_prog_name="bioimageio",
     cli_use_class_docs_for_groups=True,
-    cli_implicit_flags=True,
     use_attribute_docstrings=True,
 ):
     """bioimageio - CLI for bioimage.io resources 🦒"""
@@ -575,6 +634,15 @@ class Bioimageio(
 
     predict: CliSubCommand[PredictCmd]
     "Predict with a model resource"
+
+    update_format: CliSubCommand[UpdateFormatCmd] = Field(alias="update-format")
+    """Update the metadata format"""
+
+    increase_weight_formats: CliSubCommand[IncreaseWeightFormatsCmd] = Field(
+        alias="increase-weight-formats"
+    )
+    """Add additional weights to the model descriptions converted from available
+    formats to improve deployability."""
 
     @classmethod
     def settings_customise_sources(
@@ -613,7 +681,14 @@ class Bioimageio(
             "executing CLI command:\n{}",
             pformat({k: v for k, v in self.model_dump().items() if v is not None}),
         )
-        cmd = self.validate_format or self.test or self.package or self.predict
+        cmd = (
+            self.validate_format
+            or self.test
+            or self.package
+            or self.predict
+            or self.update_format
+            or self.increase_weight_formats
+        )
         assert cmd is not None
         cmd.run()
 

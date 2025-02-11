@@ -51,11 +51,16 @@ def _convert_axis_ids(
     if mode == "per_sample":
         ret = []
     elif mode == "per_dataset":
-        ret = [AxisId("b")]
+        ret = [v0_5.BATCH_AXIS_ID]
     else:
         assert_never(mode)
 
-    ret.extend([AxisId(a) for a in axes])
+    ret.extend(
+        [
+            AxisId(v0_5._AXIS_ID_MAP.get(a, a))  # pyright: ignore[reportPrivateUsage]
+            for a in axes
+        ]
+    )
     return tuple(ret)
 
 
@@ -299,9 +304,15 @@ class ScaleLinear(_SimpleOperator):
         member_id: MemberId,
     ) -> Self:
         kwargs = descr.kwargs
-        if isinstance(kwargs, v0_5.ScaleLinearAlongAxisKwargs):
+        if isinstance(kwargs, v0_5.ScaleLinearKwargs):
+            axis = None
+        elif isinstance(kwargs, v0_5.ScaleLinearAlongAxisKwargs):
             axis = kwargs.axis
-        elif isinstance(kwargs, (v0_4.ScaleLinearKwargs, v0_5.ScaleLinearKwargs)):
+        elif isinstance(kwargs, v0_4.ScaleLinearKwargs):
+            if kwargs.axes is not None:
+                raise NotImplementedError(
+                    "model.v0_4.ScaleLinearKwargs with axes not implemented, please consider updating the model to v0_5."
+                )
             axis = None
         else:
             assert_never(kwargs)
